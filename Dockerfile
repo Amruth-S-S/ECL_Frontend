@@ -19,8 +19,10 @@ COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
-# Copy all env files so API routes can read server-side env vars at runtime
-COPY --from=builder /app/.env* ./
+# Copy env files if present. package.json is listed too so this COPY never
+# fails when no .env* file exists (e.g. .env is gitignored in Cloud Build).
+# Runtime secrets (EMAIL_*, WHATSAPP_*) should be set on the Cloud Run service.
+COPY --from=builder /app/package.json /app/.env* ./
 
 # Next.js will run on port 8080 (Cloud Run expects this)
 EXPOSE 8080
