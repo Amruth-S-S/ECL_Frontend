@@ -1,0 +1,739 @@
+body, html {
+    margin: 0;
+    padding: 0;
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+}
+
+.login-page {
+    position: relative;
+    height: 100vh;
+    height: 100dvh;
+    width: 100%;
+    overflow: hidden;
+}
+
+/* ================================
+   SPLIT-SCREEN HERO
+   ================================ */
+.image-section {
+    position: fixed;
+    inset: 0;
+    background-image: url('./image.jpg');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    /* This is what was actually showing the scrollbar — it's a separate,
+       full-viewport scroll container sitting behind the card, and its
+       scrollbar renders at the very edge of the browser window (which is
+       why it looked disconnected from the card itself). .form-container
+       already scrolls internally if its own content is ever too tall, so
+       this outer one was redundant and is the one the screenshots show. */
+    overflow: hidden;
+}
+
+.overlay {
+    position: relative;
+    height: 100vh;
+    height: 100dvh;
+    width: 100%;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 48px;
+    padding: 24px 6vw;
+    background: linear-gradient(100deg,
+        rgba(8, 13, 46, 0.86) 0%,
+        rgba(13, 20, 63, 0.68) 32%,
+        rgba(13, 20, 63, 0.32) 55%,
+        rgba(13, 20, 63, 0) 74%);
+}
+
+.overlay h1 {
+    color: #fff;
+    font-size: clamp(1.9rem, 3.6vw, 3.1rem);
+    line-height: 1.25;
+    font-weight: 700;
+    max-width: 540px;
+    margin: 0;
+    text-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+}
+
+.overlay h1 span {
+    color: #a5b4fc;
+    font-style: italic;
+    font-weight: 700;
+}
+
+/* ================================
+   AUTH CARD
+   ================================ */
+.form-container {
+    flex-shrink: 0;
+    width: 100%;
+    max-width: 420px;
+    /* Sized against .overlay's own available height (100dvh minus its
+       vertical padding) rather than a flat 90vh, so the card always fits
+       inside the space it actually has — it was overflowing that space
+       before, which is what forced the scrollbar to appear. */
+    max-height: calc(100dvh - 48px - 16px);
+    /* Without this, max-height only capped the *content* box and the 56px
+       of top+bottom padding below got added on top of that — so the card's
+       real rendered height was always ~56px taller than the max-height was
+       supposed to allow, which is what was still overflowing and forcing
+       the scrollbar to show even after the max-height fix. */
+    box-sizing: border-box;
+    background: #fff;
+    padding: 28px 34px;
+    border-radius: 22px;
+    box-shadow: 0 24px 64px rgba(11, 16, 56, 0.4), 0 2px 8px rgba(11, 16, 56, 0.08);
+    text-align: center;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* Custom Scrollbar for form container — only shows if content genuinely
+   can't fit (e.g. a very short window), styled thin instead of the
+   default OS scrollbar (which also renders up/down arrow buttons unless
+   explicitly hidden, as below). */
+.form-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.form-container::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+.form-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.form-container::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 10px;
+}
+
+.form-container::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+}
+
+.form-container .logo {
+    display: block;
+    max-width: 130px;
+    margin: 0 auto 14px;
+}
+
+.form-container h2 {
+    font-size: 1.5rem;
+    margin-bottom: 20px;
+}
+
+/* ================================
+   INPUTS
+   ================================ */
+.input-group {
+    position: relative;
+    margin-bottom: 18px;
+    text-align: left;
+}
+
+.input-group label {
+    display: block;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 6px;
+}
+
+.input-group input {
+    width: 100%;
+    padding: 12px 42px 12px 14px;
+    font-size: 0.95rem;
+    border: 1.5px solid #e5e7eb;
+    border-radius: 10px;
+    background: #f9fafb;
+    line-height: 1.5;
+    box-sizing: border-box;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.input-group input:focus {
+    outline: none;
+    border-color: #313b96;
+    background: #fff;
+    box-shadow: 0 0 0 3px rgba(49, 59, 150, 0.12);
+}
+
+.input-group i {
+    position: absolute;
+    right: 14px;
+    bottom: 13px;
+    font-size: 1.05rem;
+    color: #9ca3af;
+    cursor: pointer;
+    pointer-events: none;
+}
+
+.forgot-password {
+    text-align: right;
+    margin: -6px 0 20px;
+}
+
+.forgot-password span {
+    font-size: 0.85rem;
+    color: #313b96;
+    font-weight: 600;
+}
+
+.forgot-password span:hover {
+    text-decoration: underline;
+}
+
+/* ================================
+   BUTTONS
+   ================================ */
+button[type="submit"] {
+    width: 100%;
+    padding: 13px;
+    background: linear-gradient(135deg, #313b96 0%, #1e3a8a 100%);
+    border: none;
+    color: white;
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    border-radius: 10px;
+    cursor: pointer;
+    box-shadow: 0 8px 20px rgba(49, 59, 150, 0.3);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+button[type="submit"]:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 24px rgba(49, 59, 150, 0.4);
+}
+
+button[type="submit"]:disabled {
+    background: linear-gradient(135deg, #cbd5e1 0%, #9ca3af 100%);
+    box-shadow: none;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.footer {
+    text-align: center;
+    padding: 10px 0;
+    background-color: white;
+}
+
+.footer p {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #666;
+}
+
+.form-container button[type="submit"],
+.form-container button[type="button"] {
+    width: 100%;
+    padding: 13px;
+    background: linear-gradient(135deg, #313b96 0%, #1e3a8a 100%);
+    border: none;
+    color: white;
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    border-radius: 10px;
+    cursor: pointer;
+    box-shadow: 0 8px 20px rgba(49, 59, 150, 0.3);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.form-container button[type="submit"]:hover,
+.form-container button[type="button"]:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 24px rgba(49, 59, 150, 0.4);
+}
+
+.form-container button[type="submit"]:disabled,
+.form-container button[type="button"]:disabled {
+    background: linear-gradient(135deg, #cbd5e1 0%, #9ca3af 100%);
+    box-shadow: none;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* ================================
+   TAB NAVIGATION (LOGIN / SIGN UP pill)
+   ================================ */
+.tab-navigation {
+    display: flex;
+    background: #f1f3f9;
+    border-radius: 999px;
+    padding: 4px;
+    margin-bottom: 28px;
+    border-bottom: none;
+}
+
+.tab-button {
+    flex: 1;
+    padding: 10px 0;
+    background: none;
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 0.82rem;
+    letter-spacing: 0.6px;
+    color: #6b7280;
+    position: relative;
+    transition: background 0.25s ease, color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.tab-button:hover:not(.active) {
+    color: #313b96;
+}
+
+.tab-button.active {
+    background: linear-gradient(135deg, #313b96 0%, #1e3a8a 100%);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(49, 59, 150, 0.35);
+}
+
+/* Signup Form Styles */
+.input-group select {
+    width: 100%;
+    padding: 12px 15px;
+    border: 1.5px solid #e5e7eb;
+    border-radius: 10px;
+    font-size: 14px;
+    margin-bottom: 15px;
+    box-sizing: border-box;
+    background: #f9fafb;
+}
+
+.already-have-account {
+    text-align: center;
+    margin-top: 15px;
+    color: #666;
+}
+
+/* Two Column Form Styles */
+.two-column-form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    width: 100%;
+}
+
+.form-row {
+    display: flex;
+    gap: 15px;
+    width: 100%;
+}
+
+.form-row.single-field {
+    justify-content: center;
+}
+
+.form-row.single-field .input-group {
+    width: 50%;
+}
+
+.input-group {
+    flex: 1;
+}
+
+.input-group input,
+.input-group select {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.create-account-btn {
+    width: 100%;
+    padding: 13px;
+    background: linear-gradient(135deg, #313b96 0%, #1e3a8a 100%);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-weight: 700;
+    margin-top: 20px;
+    cursor: pointer;
+    box-shadow: 0 8px 20px rgba(49, 59, 150, 0.3);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.create-account-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 24px rgba(49, 59, 150, 0.4);
+}
+
+.create-account-btn:disabled {
+    background: linear-gradient(135deg, #cbd5e1 0%, #9ca3af 100%);
+    box-shadow: none;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* Compact Form Styles */
+.compact-form {
+    width: 100%;
+    max-width: 400px;
+    margin: 0 auto;
+}
+
+.tab-nav {
+    display: flex;
+    background: #f1f3f9;
+    border-radius: 999px;
+    padding: 4px;
+    margin-bottom: 20px;
+}
+
+.tab-btn {
+    flex: 1;
+    padding: 9px 0;
+    background: none;
+    border: none;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 0.8rem;
+    color: #6b7280;
+    cursor: pointer;
+    transition: background 0.25s ease, color 0.25s ease;
+}
+
+.tab-btn.active {
+    background: linear-gradient(135deg, #313b96 0%, #1e3a8a 100%);
+    color: #fff;
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 15px;
+}
+
+.form-group {
+    margin-bottom: 0;
+}
+
+.form-group.full-width {
+    grid-column: span 2;
+}
+
+.form-group label {
+    display: block;
+    font-size: 12px;
+    color: #374151;
+    margin-bottom: 4px;
+    font-weight: 600;
+    text-align: left;
+    padding-left: 2px;
+}
+
+.form-group input,
+.form-group select {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1.5px solid #e5e7eb;
+    border-radius: 8px;
+    font-size: 13px;
+    box-sizing: border-box;
+    background: #f9fafb;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+    outline: none;
+    border-color: #313b96;
+    background: #fff;
+    box-shadow: 0 0 0 3px rgba(49, 59, 150, 0.12);
+}
+
+.password-input,
+.confirm-password-input {
+    position: relative;
+}
+
+.password-input input,
+.confirm-password-input input {
+    padding-right: 36px;
+}
+
+.password-input i,
+.password-input span,
+.confirm-password-input i,
+.confirm-password-input span {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #9ca3af;
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+}
+
+.submit-btn {
+    width: 100%;
+    padding: 12px;
+    background: linear-gradient(135deg, #313b96 0%, #1e3a8a 100%);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 700;
+    margin-top: 10px;
+    cursor: pointer;
+    box-shadow: 0 8px 20px rgba(49, 59, 150, 0.3);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.submit-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 24px rgba(49, 59, 150, 0.4);
+}
+
+.submit-btn:disabled {
+    background: linear-gradient(135deg, #cbd5e1 0%, #9ca3af 100%);
+    box-shadow: none;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.switch-auth {
+    text-align: center;
+    font-size: 12px;
+    color: #666;
+    margin-top: 18px;
+}
+
+.switch-auth span {
+    color: #313b96;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+/* Spinner overlay */
+.spinner-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(8, 13, 46, 0.55);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+
+/* OTP and other form containers */
+.otp-phone-screen,
+.forgot-password-container {
+    padding: 20px;
+}
+
+.otp-phone-screen h3,
+.forgot-password-container h3 {
+    color: #313b96;
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 20px;
+}
+
+/* ================================
+   MOBILE RESPONSIVE STYLES
+   ================================ */
+
+/* Tablets and smaller devices (900px and below) */
+@media screen and (max-width: 900px) {
+    .overlay {
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: center;
+        gap: 24px;
+        padding: 32px 20px;
+        overflow-y: auto;
+        background: linear-gradient(180deg,
+            rgba(8, 13, 46, 0.82) 0%,
+            rgba(8, 13, 46, 0.72) 55%,
+            rgba(8, 13, 46, 0.6) 100%);
+    }
+
+    .overlay h1 {
+        font-size: 1.7rem;
+        max-width: 100%;
+        text-align: center;
+        margin-top: 20px;
+    }
+
+    .image-section {
+        position: relative;
+        height: auto;
+        min-height: 100vh;
+    }
+
+    .form-container {
+        max-width: 92%;
+        margin: 10px auto 30px;
+    }
+}
+
+/* Mobile devices (480px and below) */
+@media screen and (max-width: 480px) {
+    .overlay h1 {
+        font-size: 1.4rem;
+        padding: 0 8px;
+        margin-top: 10px;
+    }
+
+    .form-container {
+        max-width: 95%;
+        padding: 26px 18px;
+        border-radius: 18px;
+        max-height: 82vh;
+    }
+
+    .form-container .logo {
+        max-width: 120px;
+        margin-bottom: 14px;
+    }
+
+    .form-container h2,
+    .form-container h3 {
+        font-size: 1.3rem;
+        margin-bottom: 15px;
+    }
+
+    .input-group {
+        margin-bottom: 14px;
+    }
+
+    .input-group label,
+    .form-group label {
+        font-size: 0.85rem;
+    }
+
+    .input-group input,
+    .input-group select,
+    .form-group input,
+    .form-group select {
+        padding: 11px 38px 11px 12px;
+        font-size: 14px;
+    }
+
+    .tab-button,
+    .tab-btn {
+        padding: 9px 0;
+        font-size: 12px;
+    }
+
+    button[type="submit"],
+    .submit-btn,
+    .create-account-btn {
+        padding: 12px;
+        font-size: 15px;
+    }
+
+    .form-grid {
+        gap: 10px;
+    }
+
+    .footer p {
+        font-size: 0.75rem;
+    }
+
+    .switch-auth,
+    .already-have-account {
+        font-size: 11px;
+    }
+
+    /* OTP Input adjustments for mobile */
+    .form-container div[style*="minWidth: 480px"] {
+        min-width: auto !important;
+        max-width: 100% !important;
+        padding: 20px 15px !important;
+    }
+
+    /* Adjust OTP input boxes for mobile */
+    .form-container input[id^="otp-input-"] {
+        width: 42px !important;
+        height: 42px !important;
+        font-size: 18px !important;
+    }
+
+    .form-container div[style*="gap: 12px"] {
+        gap: 8px !important;
+    }
+}
+
+/* Very small mobile devices (360px and below) */
+@media screen and (max-width: 360px) {
+    .overlay h1 {
+        font-size: 1.25rem;
+    }
+
+    .form-container {
+        padding: 20px 14px;
+        max-height: 78vh;
+    }
+
+    .form-container h2,
+    .form-container h3 {
+        font-size: 1.15rem;
+    }
+
+    .input-group input,
+    .input-group select,
+    .form-group input,
+    .form-group select {
+        padding: 9px 34px 9px 10px;
+        font-size: 13px;
+    }
+
+    button[type="submit"],
+    .submit-btn,
+    .create-account-btn {
+        padding: 10px;
+        font-size: 14px;
+    }
+
+    /* Smaller OTP boxes for very small screens */
+    .form-container input[id^="otp-input-"] {
+        width: 38px !important;
+        height: 38px !important;
+        font-size: 16px !important;
+    }
+
+    .form-container div[style*="gap: 12px"],
+    .form-container div[style*="gap: 8px"] {
+        gap: 6px !important;
+    }
+}
+
+/* Landscape orientation adjustments for mobile */
+@media screen and (max-height: 500px) and (orientation: landscape) {
+    .overlay {
+        padding: 20px 10px;
+    }
+
+    .overlay h1 {
+        font-size: 1.15rem;
+        margin-top: 0;
+    }
+
+    .form-container {
+        margin: 10px auto;
+        padding: 18px;
+        max-height: 90vh;
+    }
+}

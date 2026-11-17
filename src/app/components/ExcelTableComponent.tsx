@@ -1,0 +1,2057 @@
+import React, { useState, useRef, useEffect } from "react";
+import {
+  Plus,
+  Trash2,
+  Check,
+  X,
+  Save,
+  Loader2,
+  ChevronDown,
+  ChevronUp,
+  AlertTriangle,
+  Upload,
+  Edit2,
+  RefreshCw,
+  Database,
+  Coins,
+} from "lucide-react";
+
+interface FieldData {
+  id: number;
+  fieldName: string;
+  fieldDescription: string;
+  fieldType: string;
+  fieldLength: string;
+  fieldValue: string;
+  originalFieldName?: string;
+  source?: string;
+}
+
+interface TableData {
+  id: string;
+  table_name: string;
+  description: string;
+  has_uploaded_file?: boolean;
+  file_name?: string | null;
+  file_size_bytes?: number | null;
+  row_count?: number | null;
+  column_count?: number | null;
+  fields?: any[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface ExcelTableComponentProps {
+  boardId?: string | null;
+  // When provided, a "Currency Settings" tab button is shown in the header
+  // that switches the panel over to the currency-settings view.
+  onSwitchToCurrency?: () => void;
+}
+
+const FIELD_TYPES = ["char", "list", "number", "date", "boolean"];
+const FIELDS_PER_PAGE = 10;
+
+// Skeleton placeholder for the Master Data tables list, shown while tables
+// are loading instead of a generic spinner.
+const MasterDataRowSkeleton = () => (
+  <tr className="animate-pulse">
+    <td className="px-3 py-3"><div className="h-3.5 bg-gray-200 rounded w-28" /></td>
+    <td className="px-3 py-3"><div className="h-3.5 bg-gray-200 rounded w-40" /></td>
+    <td className="px-3 py-3">
+      <div className="flex justify-center items-center gap-2">
+        <div className="h-5 w-5 bg-gray-200 rounded" />
+        <div className="h-5 w-5 bg-gray-200 rounded" />
+      </div>
+    </td>
+  </tr>
+);
+
+const ExcelTableComponent = ({ boardId, onSwitchToCurrency }: ExcelTableComponentProps) => {
+  const loggedInUserId = (() => {
+    try {
+      const d = localStorage.getItem("currentUserData");
+      if (d) return String(JSON.parse(d).userId);
+    } catch {}
+    return localStorage.getItem("loggedInUserId") || null;
+  })();
+
+  const isViewer = (() => {
+    try {
+      const d = localStorage.getItem("currentUserData");
+      const role = d ? JSON.parse(d).orgRole : null;
+      return role === 'VIEWER' || role === 'EDITOR' || role === 'ANALYST';
+    } catch { return false; }
+  })();
+
+  // ─── Logo upload — moved here from Sidebar, which now only displays the
+  // logo. Uses the exact same per-user /api/logo/* endpoints Sidebar reads
+  // from (there's no org-level id reliably available in session data, so we
+  // key logos by user, same as before — just uploaded from Master Data now).
+  const [isLogoModalOpen, setIsLogoModalOpen] = useState(false);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+
+  const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) setLogoFile(file);
+  };
+  const closeLogoModal = () => { setIsLogoModalOpen(false); setLogoFile(null); };
+
+  const handleLogoUpload = async () => {
+    if (!logoFile) { showToast('Please select a file', 'error'); return; }
+    if (!loggedInUserId) { showToast('User not found. Please log in again.', 'error'); return; }
+
+    setIsUploadingLogo(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', logoFile);
+      const response = await fetch(`${API_BASE_URL}/api/logo/upload/${loggedInUserId}`, {
+        method: 'POST',
+        headers: { 'X-API-Key': API_KEY },
+        body: formData,
+      });
+      if (response.ok) {
+        showToast('Logo updated successfully!', 'success');
+        closeLogoModal();
+        // Sidebar owns the display (reads the same /api/logo/{userId}
+        // endpoint) — tell it to refetch so the new logo shows immediately.
+        window.dispatchEvent(new Event('logo-updated'));
+      } else {
+        const err = await response.json().catch(() => ({}));
+        showToast(err.detail || err.message || 'Upload failed. Please try again.', 'error');
+      }
+    } catch {
+      showToast('Network error. Please check your connection.', 'error');
+    } finally {
+      setIsUploadingLogo(false);
+    }
+  };
+
+  const [tables, setTables] = useState<TableData[]>([]);
+  const [tablesLoading, setTablesLoading] = useState(false);
+  const [expandedTableId, setExpandedTableId] = useState<string | null>(null);
+
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newTableName, setNewTableName] = useState("");
+  const [newTableDesc, setNewTableDesc] = useState("");
+
+  const [uploadingFor, setUploadingFor] = useState<string | null>(null);
+  const [datasetFile, setDatasetFile] = useState<File | null>(null);
+  const [isDraggingDataset, setIsDraggingDataset] = useState(false);
+  const [uploadingDataset, setUploadingDataset] = useState(false);
+  const datasetFileInputRef = useRef<HTMLInputElement>(null);
+
+  const [fieldsMap, setFieldsMap] = useState<{
+    [tableId: string]: FieldData[];
+  }>({});
+  const [fieldsLoading, setFieldsLoading] = useState<{
+    [tableId: string]: boolean;
+  }>({});
+  const [fieldPage, setFieldPage] = useState<{ [tableId: string]: number }>({});
+  const [savingField, setSavingField] = useState(false);
+  const [editingCell, setEditingCell] = useState<string | null>(null);
+  const [editCellValue, setEditCellValue] = useState("");
+  const [modifiedRows, setModifiedRows] = useState<Set<number>>(new Set());
+  const cellInputRef = useRef<HTMLInputElement | HTMLSelectElement>(null);
+
+  const [editingTableId, setEditingTableId] = useState<string | null>(null);
+  const [editTableName, setEditTableName] = useState("");
+  const [editTableDesc, setEditTableDesc] = useState("");
+  const [updating, setUpdating] = useState(false);
+
+  const [toast, setToast] = useState<{
+    show: boolean;
+    message: string;
+    type: "success" | "error" | "warning";
+  }>({ show: false, message: "", type: "success" });
+  const [confirmDialog, setConfirmDialog] = useState<{
+    show: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    onCancel: () => void;
+  }>({
+    show: false,
+    title: "",
+    message: "",
+    onConfirm: () => {},
+    onCancel: () => {},
+  });
+
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+  const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  const showToast = (
+    message: string,
+    type: "success" | "error" | "warning" = "success",
+  ) => {
+    setToast({ show: true, message, type });
+    setTimeout(
+      () => setToast({ show: false, message: "", type: "success" }),
+      4000,
+    );
+  };
+
+  const showConfirm = (
+    title: string,
+    message: string,
+    onConfirm: () => void,
+  ) => {
+    setConfirmDialog({
+      show: true,
+      title,
+      message,
+      onConfirm: () => {
+        onConfirm();
+        setConfirmDialog((p) => ({ ...p, show: false }));
+      },
+      onCancel: () => setConfirmDialog((p) => ({ ...p, show: false })),
+    });
+  };
+
+  // ── Effects ───────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    // Reset ALL board-specific state whenever the board switches
+    setTables([]);
+    setFieldsMap({});
+    setExpandedTableId(null);
+    setUploadingFor(null);
+    setDatasetFile(null);
+    setEditingTableId(null);
+    if (boardId && loggedInUserId) fetchTables();
+  }, [boardId, loggedInUserId]);
+
+  useEffect(() => {
+    if (editingCell && cellInputRef.current) {
+      cellInputRef.current.focus();
+      if (cellInputRef.current instanceof HTMLInputElement)
+        cellInputRef.current.select();
+    }
+  }, [editingCell]);
+
+  // ── Fetch Tables ──────────────────────────────────────────────────────────
+
+  const fetchTables = async () => {
+    if (!loggedInUserId || !boardId) return;
+    setTablesLoading(true);
+    try {
+      // Filter by both user AND board so each board shows only its own tables
+      const res = await fetch(
+        `${API_BASE_URL}/api/master-data/user/${loggedInUserId}?active_only=false&board_id=${boardId}`,
+        { headers: { "X-API-Key": API_KEY } },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setTables(
+          (data.master_data_list || []).map((item: any) => ({
+            id: String(item.id),
+            table_name: item.table_name,
+            description: item.description,
+            has_uploaded_file: item.has_uploaded_file,
+            file_name: item.file_name,
+            file_size_bytes: item.file_size_bytes,
+            row_count: item.row_count,
+            column_count: item.column_count,
+            fields: item.fields || [],
+            created_at: item.created_at,
+            updated_at: item.updated_at,
+          })),
+        );
+      } else {
+        setTables([]);
+      }
+    } catch {
+      setTables([]);
+    } finally {
+      setTablesLoading(false);
+    }
+  };
+
+  // ── Fetch Fields ──────────────────────────────────────────────────────────
+
+  const fetchFields = async (tableId: string) => {
+    setFieldsLoading((p) => ({ ...p, [tableId]: true }));
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/master-data/${tableId}/fields?required_only=false`,
+        { headers: { "X-API-Key": API_KEY } },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const raw: any[] = Array.isArray(data)
+          ? data
+          : data.fields || data.data || [];
+        setFieldsMap((p) => ({
+          ...p,
+          [tableId]: raw.map((f: any, i: number) => ({
+            id: i + 1,
+            fieldName: f.field_name || "",
+            fieldDescription: f.field_description || "",
+            fieldType: f.field_datatype || f.field_type || "char",
+            fieldLength: f.field_length?.toString() || "",
+            fieldValue: Array.isArray(f.field_value)
+              ? f.field_value.join(", ")
+              : typeof f.field_value === "object" && f.field_value !== null
+                ? JSON.stringify(f.field_value)
+                : f.field_value || "",
+            originalFieldName: f.field_name || "",
+            source: f.source || "manual",
+          })),
+        }));
+        // Reset to page 1 when fields are refreshed
+        setFieldPage((p) => ({ ...p, [tableId]: 1 }));
+      }
+    } catch {
+      showToast("Error loading fields", "error");
+    } finally {
+      setFieldsLoading((p) => ({ ...p, [tableId]: false }));
+    }
+  };
+
+  // ── Toggle expand ─────────────────────────────────────────────────────────
+
+  const toggleExpanded = async (tableId: string) => {
+    if (expandedTableId === tableId) {
+      setExpandedTableId(null);
+      setUploadingFor(null);
+      setDatasetFile(null);
+    } else {
+      setExpandedTableId(tableId);
+      setUploadingFor(null);
+      setDatasetFile(null);
+      setModifiedRows(new Set());
+      if (!fieldsMap[tableId]) await fetchFields(tableId);
+    }
+  };
+
+  // ── Create Modal ──────────────────────────────────────────────────────────
+
+  const openCreateModal = () => {
+    setNewTableName("");
+    setNewTableDesc("");
+    setShowCreateModal(true);
+  };
+  const closeCreateModal = () => {
+    setShowCreateModal(false);
+    setNewTableName("");
+    setNewTableDesc("");
+  };
+
+  const handleCreate = async () => {
+    if (!boardId || !loggedInUserId) {
+      showToast("Board or user not available", "error");
+      return;
+    }
+    if (!newTableName.trim() || !newTableDesc.trim()) {
+      showToast("Table name and description are required", "error");
+      return;
+    }
+    setCreating(true);
+    try {
+      const body = {
+        table_name: newTableName.trim(),
+        description: newTableDesc.trim(),
+        board_id: boardId,
+        selected_currency_code: "USD",
+        selected_currency_symbol: "$",
+        selected_currency_name: "US Dollar",
+      };
+      const res = await fetch(
+        `${API_BASE_URL}/api/master-data/manual?user_id=${loggedInUserId}&board_id=${boardId}`,
+        {
+          method: "POST",
+          headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      if (res.ok) {
+        const created = await res.json();
+        showToast("Master data table created!", "success");
+        closeCreateModal();
+        await fetchTables();
+        const newId = String(created?.data?.id || created?.id || "");
+        if (newId) {
+          setExpandedTableId(newId);
+          await fetchFields(newId);
+        }
+      } else {
+        const err = await res.json();
+        showToast(`Failed: ${err.detail || "Unknown error"}`, "error");
+      }
+    } catch {
+      showToast("An error occurred", "error");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // ── Edit Table — PUT /api/master-data/{id} ────────────────────────────────
+
+  const startEditTable = (t: TableData) => {
+    setEditingTableId(t.id);
+    setEditTableName(t.table_name);
+    setEditTableDesc(t.description);
+  };
+  const cancelEditTable = () => {
+    setEditingTableId(null);
+    setEditTableName("");
+    setEditTableDesc("");
+  };
+
+  const saveEditTable = async (tableId: string) => {
+    if (!editTableName.trim() || !editTableDesc.trim()) {
+      showToast("Both fields required", "error");
+      return;
+    }
+    setUpdating(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/master-data/${tableId}`, {
+        method: "PUT",
+        headers: { "X-API-Key": API_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          table_name: editTableName,
+          description: editTableDesc,
+        }),
+      });
+      if (res.ok) {
+        cancelEditTable();
+        fetchTables();
+        showToast("Table updated!", "success");
+      } else {
+        const err = await res.json();
+        showToast(`Failed: ${err.detail || "Unknown error"}`, "error");
+      }
+    } catch {
+      showToast("Error updating", "error");
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  // ── Delete Table — DELETE /api/master-data/{id} ───────────────────────────
+
+  const deleteTable = (tableId: string, name: string) => {
+    showConfirm(
+      "Delete Table",
+      `Delete "${name}"? All fields and dataset will be removed permanently.`,
+      async () => {
+        try {
+          const res = await fetch(
+            `${API_BASE_URL}/api/master-data/${tableId}`,
+            { method: "DELETE", headers: { "X-API-Key": API_KEY } },
+          );
+          if (res.ok) {
+            fetchTables();
+            if (expandedTableId === tableId) setExpandedTableId(null);
+            showToast("Table deleted!", "success");
+          } else {
+            const err = await res.json();
+            showToast(`Failed: ${err.detail || "Unknown error"}`, "error");
+          }
+        } catch {
+          showToast("Error deleting", "error");
+        }
+      },
+    );
+  };
+
+  // ── Upload dataset ────────────────────────────────────────────────────────
+
+  const handleUploadDataset = async (tableId: string) => {
+    if (!datasetFile) {
+      showToast("Please select a file", "error");
+      return;
+    }
+    if (!loggedInUserId) {
+      showToast("User not found", "error");
+      return;
+    }
+    const table = tables.find((t) => t.id === tableId);
+    if (!table) return;
+
+    setUploadingDataset(true);
+    try {
+      // Step 1: Delete existing table (upload API always creates new)
+      const delRes = await fetch(`${API_BASE_URL}/api/master-data/${tableId}`, {
+        method: "DELETE",
+        headers: { "X-API-Key": API_KEY },
+      });
+      if (!delRes.ok) {
+        const delErr = await delRes.json().catch(() => ({}));
+        showToast(
+          `Failed to remove existing table: ${typeof delErr.detail === "string" ? delErr.detail : "Unknown error"}`,
+          "error",
+        );
+        return;
+      }
+      // Wait for backend to process delete
+      await new Promise((r) => setTimeout(r, 1500));
+
+      // Step 2: Upload new file
+      const fd = new FormData();
+      fd.append("file", datasetFile);
+      fd.append(
+        "metadata",
+        JSON.stringify({
+          table_name: table.table_name,
+          description: table.description,
+          board_id: boardId,
+          selected_currency_code: "USD",
+          selected_currency_symbol: "$",
+          selected_currency_name: "US Dollar",
+        }),
+      );
+
+      const res = await fetch(
+        `${API_BASE_URL}/api/master-data/upload?user_id=${loggedInUserId}&board_id=${boardId}`,
+        { method: "POST", headers: { "X-API-Key": API_KEY }, body: fd },
+      );
+
+      if (res.ok) {
+        const newData = await res.json();
+        showToast("Dataset uploaded successfully!", "success");
+        setDatasetFile(null);
+        setUploadingFor(null);
+        const newId = String(newData?.data?.id || tableId);
+        await fetchTables();
+        setExpandedTableId(newId);
+        setFieldsMap((p) => {
+          const n = { ...p };
+          delete n[tableId];
+          return n;
+        });
+        await fetchFields(newId);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast(
+          `Failed: ${typeof err.detail === "string" ? err.detail : err.detail?.[0]?.msg || "Unknown error"}`,
+          "error",
+        );
+      }
+    } catch (e) {
+      console.error("Upload exception:", e);
+      showToast("Error uploading dataset", "error");
+    } finally {
+      setUploadingDataset(false);
+    }
+  };
+
+  // ── Field CRUD ────────────────────────────────────────────────────────────
+
+  const addFieldRow = (tableId: string) => {
+    const existing = fieldsMap[tableId] || [];
+    const newId = Math.max(...existing.map((r) => r.id), 0) + 1;
+    setFieldsMap((p) => ({
+      ...p,
+      [tableId]: [
+        ...existing,
+        {
+          id: newId,
+          fieldName: "",
+          fieldDescription: "",
+          fieldType: "char",
+          fieldLength: "",
+          fieldValue: "",
+          originalFieldName: "",
+        },
+      ],
+    }));
+  };
+
+  const saveField = async (tableId: string, field: FieldData) => {
+    if (!field.fieldName.trim()) {
+      showToast("Field name is required", "error");
+      return;
+    }
+    setSavingField(true);
+    try {
+      if (field.originalFieldName && field.originalFieldName !== "") {
+        // UPDATE — PUT /api/master-data/{id}/fields/{field_name}
+        const body = {
+          new_field_name: field.fieldName,
+          new_field_description: field.fieldDescription,
+          new_field_datatype: field.fieldType,
+          new_field_value: field.fieldValue,
+          new_field_length: parseInt(field.fieldLength) || 0,
+          new_is_required: false,
+        };
+        const res = await fetch(
+          `${API_BASE_URL}/api/master-data/${tableId}/fields/${encodeURIComponent(field.originalFieldName)}`,
+          {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": API_KEY,
+            },
+            body: JSON.stringify(body),
+          },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        showToast("Field updated!", "success");
+      } else {
+        // ✅ API requires fields wrapped in a "fields" array
+        const body = {
+          fields: [
+            {
+              field_name: field.fieldName,
+              field_description: field.fieldDescription,
+              field_datatype: field.fieldType,
+              field_value: field.fieldValue || null,
+              field_length: parseInt(field.fieldLength) || null,
+              is_required: false,
+            },
+          ],
+        };
+        const res = await fetch(
+          `${API_BASE_URL}/api/master-data/${tableId}/fields`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-Key": API_KEY,
+            },
+            body: JSON.stringify(body),
+          },
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(
+            typeof err.detail === "string"
+              ? err.detail
+              : err.detail?.[0]?.msg || `HTTP ${res.status}`,
+          );
+        }
+        showToast("Field created!", "success");
+      }
+      setModifiedRows((p) => {
+        const s = new Set(p);
+        s.delete(field.id);
+        return s;
+      });
+      await fetchFields(tableId);
+    } catch (err) {
+      showToast(
+        `Error: ${err instanceof Error ? err.message : "Unknown"}`,
+        "error",
+      );
+    } finally {
+      setSavingField(false);
+    }
+  };
+
+  const deleteField = (tableId: string, field: FieldData) => {
+    showConfirm(
+      "Delete Field",
+      `Delete field "${field.fieldName || "Unnamed"}"?`,
+      async () => {
+        if (!field.originalFieldName) {
+          setFieldsMap((p) => ({
+            ...p,
+            [tableId]: (p[tableId] || []).filter((r) => r.id !== field.id),
+          }));
+          showToast("Row removed", "success");
+          return;
+        }
+        try {
+          const res = await fetch(
+            `${API_BASE_URL}/api/master-data/${tableId}/fields/${encodeURIComponent(field.originalFieldName)}`,
+            { method: "DELETE", headers: { "X-API-Key": API_KEY } },
+          );
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          showToast("Field deleted!", "success");
+          await fetchFields(tableId);
+        } catch (err) {
+          showToast(
+            `Error: ${err instanceof Error ? err.message : "Unknown"}`,
+            "error",
+          );
+        }
+      },
+    );
+  };
+
+  // ── Cell editing ──────────────────────────────────────────────────────────
+
+  const handleCellClick = (rowId: number, field: string, value: string) => {
+    setEditingCell(`${rowId}-${field}`);
+    setEditCellValue(value || "");
+  };
+
+  const handleCellSave = (tableId: string, rowId: number, field: string) => {
+    setFieldsMap((p) => ({
+      ...p,
+      [tableId]: (p[tableId] || []).map((row) =>
+        row.id === rowId ? { ...row, [field]: editCellValue } : row,
+      ),
+    }));
+    setModifiedRows((p) => new Set([...p, rowId]));
+    setEditingCell(null);
+    setEditCellValue("");
+  };
+
+  const handleCellKeyDown = (
+    e: React.KeyboardEvent,
+    tableId: string,
+    rowId: number,
+    field: string,
+  ) => {
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      handleCellSave(tableId, rowId, field);
+    } else if (e.key === "Escape") {
+      setEditingCell(null);
+      setEditCellValue("");
+    }
+  };
+
+  const renderCell = (
+    tableId: string,
+    row: FieldData,
+    field: keyof FieldData,
+  ): React.ReactElement => {
+    const cellKey = `${row.id}-${field}`;
+    const isEditing = editingCell === cellKey;
+    const value = row[field] as string;
+
+    const currentType = row.fieldType;
+    const currentLen = parseInt(row.fieldLength || "0");
+
+    // ─────────────────────────────────────────────
+    // EDIT MODE
+    // ─────────────────────────────────────────────
+    if (isEditing) {
+      // TYPE SELECT
+      if (field === "fieldType") {
+        return (
+          <select
+            ref={cellInputRef as React.RefObject<HTMLSelectElement>}
+            value={editCellValue}
+            onChange={(e) => {
+              const selectedType = e.target.value;
+
+              setEditCellValue(selectedType);
+
+              setFieldsMap((prev) => ({
+                ...prev,
+                [tableId]: prev[tableId].map((r) =>
+                  r.id === row.id
+                    ? {
+                        ...r,
+                        fieldType: selectedType,
+
+                        // AUTO LEN FOR DATE
+                        fieldLength:
+                          selectedType === "date" ? "10" : r.fieldLength,
+
+                        // CLEAR VALUE WHEN TYPE CHANGES
+                        fieldValue: "",
+                      }
+                    : r,
+                ),
+              }));
+            }}
+            onBlur={() => handleCellSave(tableId, row.id, field)}
+            onKeyDown={(e) => handleCellKeyDown(e, tableId, row.id, field)}
+            className="w-full px-2 py-1 border border-blue-500 rounded text-sm focus:outline-none bg-white"
+          >
+            {FIELD_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        );
+      }
+
+      // ─────────────────────────────────────────────
+      // VALUE FIELD
+      // ─────────────────────────────────────────────
+      if (field === "fieldValue") {
+        // DATE TYPE
+        if (currentType === "date") {
+          return (
+            <div className="relative flex items-center w-full">
+              {/* VISIBLE INPUT */}
+              <input
+                ref={cellInputRef as React.RefObject<HTMLInputElement>}
+                type="text"
+                placeholder="MM/DD/YYYY"
+                value={editCellValue}
+                onClick={() => {
+                  const hiddenDateInput = document.getElementById(
+                    `hidden-date-${row.id}`,
+                  ) as HTMLInputElement;
+
+                  hiddenDateInput?.showPicker?.();
+                }}
+                onChange={(e) => {
+                  let value = e.target.value.replace(/\D/g, "");
+
+                  // MM
+                  if (value.length >= 2) {
+                    value = value.slice(0, 2) + "/" + value.slice(2);
+                  }
+
+                  // DD
+                  if (value.length >= 5) {
+                    value = value.slice(0, 5) + "/" + value.slice(5);
+                  }
+
+                  // YYYY
+                  value = value.slice(0, 10);
+
+                  setEditCellValue(value);
+                }}
+                maxLength={10}
+                onBlur={() => handleCellSave(tableId, row.id, field)}
+                onKeyDown={(e) => handleCellKeyDown(e, tableId, row.id, field)}
+                className="w-full px-2 py-1 border border-blue-500 rounded text-sm focus:outline-none pr-10 bg-white"
+              />
+
+              {/* HIDDEN DATE PICKER */}
+              <input
+                id={`hidden-date-${row.id}`}
+                type="date"
+                value={
+                  editCellValue && editCellValue.split("/").length === 3
+                    ? (() => {
+                        const [mm, dd, yyyy] = editCellValue.split("/");
+
+                        return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+                      })()
+                    : ""
+                }
+                onChange={(e) => {
+                  if (!e.target.value) return;
+
+                  const [yyyy, mm, dd] = e.target.value.split("-");
+
+                  setEditCellValue(`${mm}/${dd}/${yyyy}`);
+                }}
+                className="absolute inset-0 opacity-0 cursor-pointer"
+              />
+
+              {/* ACTION BUTTONS */}
+              <div className="absolute right-1 flex gap-0.5 z-10">
+                <button
+                  onClick={() => handleCellSave(tableId, row.id, field)}
+                  className="text-green-600 hover:text-green-800"
+                >
+                  <Check className="h-3 w-3" />
+                </button>
+
+                <button
+                  onClick={() => {
+                    setEditingCell(null);
+                    setEditCellValue("");
+                  }}
+                  className="text-red-500 hover:text-red-700"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+          );
+        }
+
+        // NUMBER TYPE
+        if (currentType === "number") {
+          return (
+            <div className="relative flex items-center">
+              <input
+                ref={cellInputRef as React.RefObject<HTMLInputElement>}
+                type="text"
+                value={editCellValue}
+                onChange={(e) => {
+                  let value = e.target.value.replace(/[^0-9]/g, "");
+
+                  if (currentLen > 0) {
+                    value = value.slice(0, currentLen);
+                  }
+
+                  setEditCellValue(value);
+                }}
+                maxLength={currentLen || undefined}
+                onBlur={() => handleCellSave(tableId, row.id, field)}
+                onKeyDown={(e) => handleCellKeyDown(e, tableId, row.id, field)}
+                className="w-full px-2 py-1 border border-blue-500 rounded text-sm focus:outline-none pr-10 bg-white"
+              />
+
+              <div className="absolute right-1 flex gap-0.5">
+                <button
+                  onClick={() => handleCellSave(tableId, row.id, field)}
+                  className="text-green-600 hover:text-green-800"
+                >
+                  <Check className="h-3 w-3" />
+                </button>
+
+                <button
+                  onClick={() => {
+                    setEditingCell(null);
+                    setEditCellValue("");
+                  }}
+                  className="text-red-500 hover:text-red-700"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+          );
+        }
+
+        // CHAR TYPE
+        return (
+          <div className="relative flex items-center">
+            <input
+              ref={cellInputRef as React.RefObject<HTMLInputElement>}
+              type="text"
+              value={editCellValue}
+              onChange={(e) => {
+                let value = e.target.value;
+
+                if (currentLen > 0) {
+                  value = value.slice(0, currentLen);
+                }
+
+                setEditCellValue(value);
+              }}
+              maxLength={currentLen || undefined}
+              onBlur={() => handleCellSave(tableId, row.id, field)}
+              onKeyDown={(e) => handleCellKeyDown(e, tableId, row.id, field)}
+              className="w-full px-2 py-1 border border-blue-500 rounded text-sm focus:outline-none pr-10 bg-white"
+            />
+
+            <div className="absolute right-1 flex gap-0.5">
+              <button
+                onClick={() => handleCellSave(tableId, row.id, field)}
+                className="text-green-600 hover:text-green-800"
+              >
+                <Check className="h-3 w-3" />
+              </button>
+
+              <button
+                onClick={() => {
+                  setEditingCell(null);
+                  setEditCellValue("");
+                }}
+                className="text-red-500 hover:text-red-700"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      // ─────────────────────────────────────────────
+      // NORMAL INPUT
+      // ─────────────────────────────────────────────
+      return (
+        <div className="relative flex items-center">
+          <input
+            ref={cellInputRef as React.RefObject<HTMLInputElement>}
+            type="text"
+            value={editCellValue}
+            onChange={(e) => setEditCellValue(e.target.value)}
+            onBlur={() => handleCellSave(tableId, row.id, field)}
+            onKeyDown={(e) => handleCellKeyDown(e, tableId, row.id, field)}
+            className="w-full px-2 py-1 border border-blue-500 rounded text-sm focus:outline-none pr-10 bg-white"
+          />
+
+          <div className="absolute right-1 flex gap-0.5">
+            <button
+              onClick={() => handleCellSave(tableId, row.id, field)}
+              className="text-green-600 hover:text-green-800"
+            >
+              <Check className="h-3 w-3" />
+            </button>
+
+            <button
+              onClick={() => {
+                setEditingCell(null);
+                setEditCellValue("");
+              }}
+              className="text-red-500 hover:text-red-700"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ─────────────────────────────────────────────
+    // DISPLAY MODE
+    // ─────────────────────────────────────────────
+    return (
+      <div
+        onClick={() => handleCellClick(row.id, field, value)}
+        className="w-full px-2 py-1 min-h-[28px] cursor-text hover:bg-blue-50 border border-transparent hover:border-blue-200 rounded transition-colors"
+      >
+        <span
+          className={`text-sm block w-full overflow-hidden text-ellipsis whitespace-nowrap ${
+            value ? "text-gray-800" : "text-gray-300 italic"
+          }`}
+          title={value || ""}
+        >
+          {value || "Click to edit..."}
+        </span>
+      </div>
+    );
+  };
+
+  // ── Dataset drag & drop ───────────────────────────────────────────────────
+
+  const handleDatasetDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingDataset(true);
+  };
+  const handleDatasetDragLeave = () => setIsDraggingDataset(false);
+  const handleDatasetDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingDataset(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) setDatasetFile(file);
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="p-4 sm:p-6">
+      <div className="max-w-full mx-auto space-y-5">
+
+        {/* ── Header ── */}
+        {/* Outer row is flex-wrap with 3 items: title, the Create button, and
+            the secondary-buttons group. All three default to order-0, so on
+            mobile they lay out in DOM order — title then Create share line 1
+            (filling the empty space next to the title instead of wasting it),
+            and the secondary group wraps to its own line below. On sm+,
+            Create switches to order-last so the visual order matches the
+            original desktop layout (Currency, Upload, Refresh, Create). */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center flex-shrink-0">
+              <Database className="w-5 h-5 text-blue-600" />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-gray-800">Master Data</h2>
+              <p className="text-xs text-gray-500 truncate">Custom master data tables for this board</p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => !isViewer && openCreateModal()}
+            disabled={isViewer || !boardId || !loggedInUserId || tables.length > 0}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-bold shadow-sm transition-colors flex-shrink-0 whitespace-nowrap sm:order-last ${
+              isViewer || !boardId || !loggedInUserId || tables.length > 0
+                ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                : "bg-blue-600 text-white hover:bg-blue-700"
+            }`}
+            title={isViewer ? "View only" : tables.length > 0 ? "Delete the existing table to create a new one" : undefined}
+          >
+            <Plus className="w-4 h-4" />
+            {!boardId ? "Select Board First" : "Create Master Data"}
+          </button>
+
+          {/* w-full (mobile only) is required here: flex-shrink-0 alone lets
+              this group render at its natural content width even when that
+              exceeds the screen, so its own flex-wrap never kicks in and
+              the last button spills past the edge. Forcing w-full makes the
+              browser actually constrain it, which lets the buttons wrap. */}
+          <div className="flex items-center gap-2 w-full sm:w-auto sm:flex-shrink-0 flex-wrap justify-end">
+            {onSwitchToCurrency && (
+              <button
+                onClick={onSwitchToCurrency}
+                className="flex items-center gap-1.5 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-full hover:border-blue-400 hover:bg-blue-50 transition-all text-sm font-bold"
+              >
+                <Coins className="w-4 h-4" />
+                <span>Currency Settings</span>
+              </button>
+            )}
+            <button
+              onClick={() => setIsLogoModalOpen(true)}
+              className="flex items-center gap-1.5 px-4 py-2 bg-blue-50 border border-blue-200 text-blue-700 rounded-full hover:bg-blue-100 hover:border-blue-300 transition-all text-sm font-bold"
+            >
+              <Upload className="w-4 h-4" />
+              <span>Upload Logo</span>
+            </button>
+            <button
+              onClick={fetchTables}
+              disabled={tablesLoading || !boardId || !loggedInUserId}
+              className="flex items-center gap-1.5 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-full hover:border-blue-400 hover:bg-blue-50 transition-all disabled:opacity-50 text-sm font-bold"
+            >
+              <RefreshCw className={`w-4 h-4 ${tablesLoading ? "animate-spin text-blue-600" : ""}`} />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        {/* ── Upload Logo Modal ── */}
+        {isLogoModalOpen && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full mx-4 overflow-hidden">
+              <div className="flex justify-between items-center px-5 py-4 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-blue-100">
+                <h2 className="text-base font-bold text-gray-900">Upload Logo</h2>
+                <button onClick={closeLogoModal} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full"><X className="w-4 h-4" /></button>
+              </div>
+              <div className="p-5 space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-2">Organization Logo</label>
+                  <div className="border-2 border-dashed border-gray-300 rounded-xl p-5 text-center hover:border-blue-400 transition-colors bg-gray-50">
+                    <input type="file" id="org-logo-upload" accept="image/*" onChange={handleLogoFileChange} className="hidden" />
+                    <label htmlFor="org-logo-upload" className="cursor-pointer flex flex-col items-center">
+                      <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center mb-2"><Upload className="w-5 h-5 text-blue-600" /></div>
+                      <span className="text-xs font-medium text-gray-700 mb-1 w-full truncate text-center px-2" title={logoFile ? logoFile.name : undefined}>{logoFile ? logoFile.name : 'Click to upload'}</span>
+                      <span className="text-xs text-gray-500">PNG, JPG, GIF, WebP, SVG up to 5MB</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 px-5 py-3 border-t bg-gray-50">
+                <button onClick={closeLogoModal} disabled={isUploadingLogo} className="px-4 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+                <button onClick={handleLogoUpload} disabled={isUploadingLogo || !logoFile} className="px-4 py-2 text-xs font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5">
+                  {isUploadingLogo ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" />Uploading...</>) : 'Submit'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Tables list ── */}
+        <div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <table className="min-w-full table-fixed">
+              <colgroup>
+                <col style={{ width: "35%" }} />
+                <col style={{ width: "50%" }} />
+                <col style={{ width: "15%" }} />
+              </colgroup>
+              <thead className="bg-blue-500">
+                <tr>
+                  <th className="px-3 py-3 text-left text-xs font-bold text-white uppercase rounded-tl-xl">
+                    Table Name
+                  </th>
+                  <th className="px-3 py-3 text-left text-xs font-bold text-white uppercase">
+                    Table Description
+                  </th>
+                  <th className="px-3 py-3 text-center text-xs font-bold text-white uppercase rounded-tr-xl">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {tablesLoading ? (
+                  <>
+                    <MasterDataRowSkeleton />
+                    <MasterDataRowSkeleton />
+                  </>
+                ) : tables.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={3}
+                      className="px-2 py-2 text-center text-xs text-gray-400"
+                    >
+                      {!boardId
+                        ? "Please select a board to manage master data tables."
+                        : 'No master data table found. Click "+ Create Master Data" to create one.'}
+                    </td>
+                  </tr>
+                ) : (
+                  tables.map((table, tableIdx) => (
+                    <React.Fragment key={table.id}>
+                      {/* ── Table row ── */}
+                      <tr className={`hover:bg-blue-50 transition-colors ${tableIdx % 2 === 0 ? "bg-white" : "bg-gray-50"}`}>
+                        <td className="px-3 py-3">
+                          {editingTableId === table.id ? (
+                            <input
+                              type="text"
+                              value={editTableName}
+                              onChange={(e) => setEditTableName(e.target.value)}
+                              className="w-full px-2 py-1.5 border border-blue-400 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                            />
+                          ) : (
+                            <span className="text-xs font-semibold text-gray-800">
+                              {table.table_name}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {editingTableId === table.id ? (
+                            <input
+                              type="text"
+                              value={editTableDesc}
+                              onChange={(e) => setEditTableDesc(e.target.value)}
+                              className="w-full px-2 py-1.5 border border-blue-400 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                            />
+                          ) : (
+                            <span className="text-xs text-gray-600">
+                              {table.description}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center justify-center gap-1">
+                            {editingTableId === table.id ? (
+                              <>
+                                <button
+                                  onClick={() => saveEditTable(table.id)}
+                                  disabled={updating}
+                                  className="text-green-600 hover:text-green-800 p-1 rounded hover:bg-green-50 disabled:opacity-50"
+                                  title="Save"
+                                >
+                                  {updating ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <Check className="h-3.5 w-3.5" />
+                                  )}
+                                </button>
+                                <button
+                                  onClick={cancelEditTable}
+                                  className="text-gray-500 hover:text-gray-700 p-1 rounded hover:bg-gray-100"
+                                  title="Cancel"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => !isViewer && startEditTable(table)}
+                                  disabled={isViewer}
+                                  className={`p-1 rounded ${isViewer ? 'text-blue-200 cursor-not-allowed opacity-40' : 'text-blue-500 hover:text-blue-700 hover:bg-blue-50'}`}
+                                  title={isViewer ? "View only" : "Edit table"}
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => !isViewer && deleteTable(table.id, table.table_name)}
+                                  disabled={isViewer}
+                                  className={`p-1 rounded ${isViewer ? 'text-red-200 cursor-not-allowed opacity-40' : 'text-red-400 hover:text-red-600 hover:bg-red-50'}`}
+                                  title={isViewer ? "View only" : "Delete table"}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => toggleExpanded(table.id)}
+                                  className="text-gray-500 hover:text-gray-700 p-1 rounded hover:bg-gray-100"
+                                  title="View fields"
+                                >
+                                  {expandedTableId === table.id ? (
+                                    <ChevronUp className="h-3.5 w-3.5" />
+                                  ) : (
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                  )}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+
+                      {/* ── Expanded panel ── */}
+                      {expandedTableId === table.id && (
+                        <tr>
+                          <td
+                            colSpan={3}
+                            className="p-0 bg-gray-50 border-t border-gray-200"
+                          >
+                            {/* No forced min-width here (previously 600px) —
+                                that floor dragged the whole expanded panel
+                                (upload button, toolbar, etc., none of which
+                                need 600px) into horizontal scroll on any
+                                screen narrower than that. The fields table
+                                below already contains its own overflow via
+                                its own overflow-x-auto + tableLayout:
+                                "fixed", so nothing else needs this. */}
+                            <div style={{ width: "100%" }}>
+                              <div>
+                                {/* File info banner */}
+                                {table.has_uploaded_file && (
+                                  <div className="mx-3 mt-2 mb-1 px-3 py-2 bg-green-50 border border-green-200 rounded text-xs flex flex-wrap items-center gap-2">
+                                    <div className="flex items-center gap-1 flex-shrink-0">
+                                      <div className="w-4 h-4 bg-green-100 rounded flex items-center justify-center">
+                                        <Upload className="h-2.5 w-2.5 text-green-600" />
+                                      </div>
+                                      <div>
+                                        <p className="text-xs font-semibold text-green-800">
+                                          Uploaded File
+                                        </p>
+                                        <p className="text-xs text-green-700 font-mono">
+                                          {table.file_name}
+                                        </p>
+                                      </div>
+                                    </div>
+                                    {/* {[
+                                                                        { label: 'Rows', value: table.row_count != null ? table.row_count.toLocaleString() : null },
+                                                                        { label: 'Columns', value: table.column_count != null ? String(table.column_count) : null },
+                                                                        { label: 'File Size', value: table.file_size_bytes != null ? `${(table.file_size_bytes / 1024).toFixed(1)} KB` : null },
+                                                                    ].filter(x => x.value !== null).map(({ label, value }) => (
+                                                                        <div key={label} className="px-3 py-1.5 bg-white border border-green-200 rounded-md text-center min-w-[64px]">
+                                                                            <p className="text-xs font-bold text-gray-800">{value}</p>
+                                                                            <p className="text-[10px] text-gray-500">{label}</p>
+                                                                        </div>
+                                                                    ))} */}
+                                  </div>
+                                )}
+
+                                {/* Upload dataset */}
+                                <div className="mx-3 mb-2 mt-1">
+                                  {uploadingFor === table.id && (
+                                    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+                                      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full mx-4 overflow-hidden">
+                                        <div className="flex justify-between items-center px-5 py-4 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-blue-100">
+                                          <h2 className="text-base font-bold text-gray-900">Upload Dataset</h2>
+                                          <button
+                                            onClick={() => {
+                                              setUploadingFor(null);
+                                              setDatasetFile(null);
+                                            }}
+                                            className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-white rounded-full"
+                                          >
+                                            <X className="h-4 w-4" />
+                                          </button>
+                                        </div>
+                                        <div className="p-5">
+                                          <div
+                                            onDragOver={handleDatasetDragOver}
+                                            onDragLeave={handleDatasetDragLeave}
+                                            onDrop={handleDatasetDrop}
+                                            onClick={() =>
+                                              datasetFileInputRef.current?.click()
+                                            }
+                                            className={`border-2 border-dashed rounded-xl cursor-pointer transition-all flex flex-col items-center justify-center gap-1 py-8 ${isDraggingDataset ? "border-blue-500 bg-blue-100" : datasetFile ? "border-green-400 bg-green-50" : "border-blue-300 hover:border-blue-500 hover:bg-blue-50"}`}
+                                          >
+                                            {datasetFile ? (
+                                              <>
+                                                <Check className="h-5 w-5 text-green-600" />
+                                                <p className="text-sm font-semibold text-gray-800">
+                                                  {datasetFile.name}
+                                                </p>
+                                                <p className="text-xs text-gray-500">
+                                                  {(
+                                                    datasetFile.size / 1024
+                                                  ).toFixed(1)}{" "}
+                                                  KB
+                                                </p>
+                                                <button
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setDatasetFile(null);
+                                                  }}
+                                                  className="text-xs text-red-500 hover:text-red-700 underline mt-1"
+                                                >
+                                                  Remove
+                                                </button>
+                                              </>
+                                            ) : (
+                                              <>
+                                                <Upload className="h-5 w-5 text-blue-400" />
+                                                <p className="text-sm text-blue-700 font-medium">
+                                                  {isDraggingDataset
+                                                    ? "Drop file here"
+                                                    : "Click to select or drag & drop"}
+                                                </p>
+                                                <p className="text-xs text-blue-400">
+                                                  .xlsx, .xls, .csv
+                                                </p>
+                                              </>
+                                            )}
+                                          </div>
+                                          <input
+                                            ref={datasetFileInputRef}
+                                            type="file"
+                                            accept=".xlsx,.xls,.csv"
+                                            className="hidden"
+                                            onChange={(e) => {
+                                              if (e.target.files?.[0])
+                                                setDatasetFile(e.target.files[0]);
+                                            }}
+                                          />
+                                        </div>
+                                        <div className="flex justify-end gap-2 px-5 py-3 border-t bg-gray-50">
+                                          <button
+                                            onClick={() => {
+                                              setUploadingFor(null);
+                                              setDatasetFile(null);
+                                            }}
+                                            className="px-4 py-2 border border-gray-300 text-gray-600 rounded-lg text-xs font-medium hover:bg-gray-100"
+                                          >
+                                            Cancel
+                                          </button>
+                                          <button
+                                            onClick={() =>
+                                              handleUploadDataset(table.id)
+                                            }
+                                            disabled={
+                                              !datasetFile || uploadingDataset
+                                            }
+                                            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
+                                          >
+                                            {uploadingDataset ? (
+                                              <>
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />{" "}
+                                                Uploading…
+                                              </>
+                                            ) : (
+                                              <>
+                                                <Upload className="h-3.5 w-3.5" />{" "}
+                                                Upload
+                                              </>
+                                            )}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {uploadingFor !== table.id && (
+                                    <button
+                                      onClick={() => {
+                                        if (isViewer) return;
+                                        setUploadingFor(table.id);
+                                        setDatasetFile(null);
+                                      }}
+                                      disabled={isViewer}
+                                      className={`px-4 py-2 rounded-md text-xs font-medium flex items-center gap-1.5 shadow-sm ${isViewer ? 'bg-gray-50 border border-gray-200 text-gray-300 cursor-not-allowed opacity-40' : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300'}`}
+                                    >
+                                      <Upload className="h-3.5 w-3.5" />
+                                      {table.has_uploaded_file
+                                        ? "Re-upload Dataset"
+                                        : "Upload Dataset"}
+                                    </button>
+                                  )}
+                                </div>
+
+                                {/* Fields toolbar */}
+                                <div className="px-3 py-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-b border-gray-200 bg-gray-50">
+                                  <span className="text-xs font-semibold text-gray-700">
+                                    Manage Fields
+                                    {fieldsMap[table.id] && (
+                                      <span className="ml-2 text-xs font-normal text-gray-400">
+                                        ({fieldsMap[table.id].length} fields)
+                                      </span>
+                                    )}
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      onClick={() => !isViewer && addFieldRow(table.id)}
+                                      disabled={isViewer || savingField}
+                                      className={`px-3 py-1.5 rounded text-xs font-medium flex items-center gap-1 shadow-sm ${isViewer ? 'bg-gray-300 text-gray-400 cursor-not-allowed opacity-40' : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50'}`}
+                                    >
+                                      <Plus className="h-3 w-3" /> Add new field
+                                    </button>
+                                    <button
+                                      onClick={() => fetchFields(table.id)}
+                                      className="px-3 py-1.5 bg-gray-100 text-gray-600 rounded text-xs font-medium hover:bg-gray-200 flex items-center gap-1 shadow-sm"
+                                    >
+                                      <RefreshCw className="h-3 w-3" /> Refresh
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* ── Fields table with IIFE for pagination vars ── */}
+                                {fieldsLoading[table.id] ? (
+                                  <div className="flex items-center justify-center py-2 gap-1 text-gray-500 text-xs">
+                                    <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                                    <span>Loading fields…</span>
+                                  </div>
+                                ) : (
+                                  (() => {
+                                    const allFields = fieldsMap[table.id] || [];
+                                    const currentPage =
+                                      fieldPage[table.id] || 1;
+                                    const totalPages = Math.ceil(
+                                      allFields.length / FIELDS_PER_PAGE,
+                                    );
+                                    const paginatedFields = allFields.slice(
+                                      (currentPage - 1) * FIELDS_PER_PAGE,
+                                      currentPage * FIELDS_PER_PAGE,
+                                    );
+
+                                    return (
+                                      <div className="bg-gray-50 rounded-xl p-3">
+                                        {/* Desktop/tablet: the original 6-column table.
+                                            A phone can't fit Field Name, Description, Type,
+                                            Len, Value and Actions side by side without
+                                            truncating or scrolling, so sm: and up only. */}
+                                        <div className="hidden sm:block overflow-x-auto rounded-xl border border-gray-200 max-w-4xl mx-auto">
+                                          <table
+                                            className="w-full"
+                                            style={{
+                                              width: "100%",
+                                              borderCollapse: "collapse",
+                                              tableLayout: "fixed",
+                                            }}
+                                          >
+                                            <thead>
+                                              <tr className="bg-blue-500">
+                                                <th
+                                                  style={{ width: "20%" }}
+                                                  className="px-3 py-3 text-left text-xs font-bold text-white uppercase rounded-tl-xl"
+                                                >
+                                                  FIELD NAME
+                                                </th>
+
+                                                <th
+                                                  style={{ width: "32%" }}
+                                                  className="px-3 py-3 text-left text-xs font-bold text-white uppercase"
+                                                >
+                                                  DESCRIPTION
+                                                </th>
+
+                                                <th
+                                                  style={{ width: "10%" }}
+                                                  className="px-3 py-3 text-left text-xs font-bold text-white uppercase"
+                                                >
+                                                  TYPE
+                                                </th>
+
+                                                <th
+                                                  style={{ width: "10%" }}
+                                                  className="px-3 py-3 text-left text-xs font-bold text-white uppercase"
+                                                >
+                                                  LEN
+                                                </th>
+
+                                                <th
+                                                  style={{ width: "32%" }}
+                                                  className="px-3 py-3 text-left text-xs font-bold text-white uppercase"
+                                                >
+                                                  VALUE
+                                                </th>
+
+                                                <th
+                                                  style={{ width: "10%" }}
+                                                  className="px-3 py-3 text-center text-xs font-bold text-white uppercase rounded-tr-xl"
+                                                >
+                                                  ACTIONS
+                                                </th>
+                                              </tr>
+                                            </thead>
+
+                                            <tbody>
+                                              {paginatedFields.map((row, rowIdx) => (
+                                                <tr
+                                                  key={row.id}
+                                                  className={`transition-colors hover:bg-blue-50 ${
+                                                    modifiedRows.has(row.id)
+                                                      ? "!bg-orange-50"
+                                                      : rowIdx % 2 === 0 ? "bg-white" : "bg-gray-50"
+                                                  }`}
+                                                >
+                                                  {/* FIELD NAME */}
+                                                  <td
+                                                    style={{
+                                                      width: "20%",
+                                                      overflow: "hidden",
+                                                    }}
+                                                    className="px-2 py-2.5 border-b border-gray-100"
+                                                  >
+                                                    {renderCell(
+                                                      table.id,
+                                                      row,
+                                                      "fieldName",
+                                                    )}
+                                                  </td>
+
+                                                  {/* DESCRIPTION */}
+                                                  <td
+                                                    style={{
+                                                      width: "32%",
+                                                      overflow: "hidden",
+                                                    }}
+                                                    className="px-2 py-2.5 border-b border-gray-100"
+                                                  >
+                                                    {renderCell(
+                                                      table.id,
+                                                      row,
+                                                      "fieldDescription",
+                                                    )}
+                                                  </td>
+
+                                                  {/* TYPE */}
+                                                  <td
+                                                    style={{
+                                                      width: "12%",
+                                                      overflow: "hidden",
+                                                    }}
+                                                    className="px-2 py-2.5 border-b border-gray-100"
+                                                  >
+                                                    {renderCell(
+                                                      table.id,
+                                                      row,
+                                                      "fieldType",
+                                                    )}
+                                                  </td>
+
+                                                  {/* LEN */}
+                                                  <td
+                                                    style={{
+                                                      width: "8%",
+                                                      overflow: "hidden",
+                                                    }}
+                                                    className="px-2 py-2.5 border-b border-gray-100"
+                                                  >
+                                                    {renderCell(
+                                                      table.id,
+                                                      row,
+                                                      "fieldLength",
+                                                    )}
+                                                  </td>
+
+                                                  {/* VALUE */}
+                                                  <td
+                                                    style={{
+                                                      width: "20%",
+                                                      overflow: "hidden",
+                                                    }}
+                                                    className="px-2 py-2.5 border-b border-gray-100"
+                                                  >
+                                                    {renderCell(
+                                                      table.id,
+                                                      row,
+                                                      "fieldValue",
+                                                    )}
+                                                  </td>
+
+                                                  {/* ACTIONS */}
+                                                  <td
+                                                    style={{
+                                                      width: "10%",
+                                                    }}
+                                                    className="px-1 py-2.5 text-center border-b border-gray-200"
+                                                  >
+                                                    <div className="flex items-center justify-center gap-1">
+                                                      <button
+                                                        onClick={() =>
+                                                          addFieldRow(table.id)
+                                                        }
+                                                        disabled={savingField}
+                                                        className="text-blue-500 hover:text-blue-700 p-1 rounded hover:bg-blue-50"
+                                                        title="Add row"
+                                                      >
+                                                        <Plus className="h-3 w-3" />
+                                                      </button>
+
+                                                      <button
+                                                        onClick={() =>
+                                                          saveField(
+                                                            table.id,
+                                                            row,
+                                                          )
+                                                        }
+                                                        disabled={savingField}
+                                                        className={`p-1 rounded disabled:opacity-50 ${
+                                                          modifiedRows.has(
+                                                            row.id,
+                                                          )
+                                                            ? "text-orange-500 hover:text-orange-700 hover:bg-orange-50"
+                                                            : "text-green-500 hover:text-green-700 hover:bg-green-50"
+                                                        }`}
+                                                        title={
+                                                          modifiedRows.has(
+                                                            row.id,
+                                                          )
+                                                            ? "Update field"
+                                                            : "Save field"
+                                                        }
+                                                      >
+                                                        <Save className="h-3 w-3" />
+                                                      </button>
+
+                                                      <button
+                                                        onClick={() =>
+                                                          deleteField(
+                                                            table.id,
+                                                            row,
+                                                          )
+                                                        }
+                                                        className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50"
+                                                        title="Delete field"
+                                                      >
+                                                        <Trash2 className="h-3 w-3" />
+                                                      </button>
+                                                    </div>
+                                                  </td>
+                                                </tr>
+                                              ))}
+
+                                              {allFields.length === 0 && (
+                                                <tr>
+                                                  <td
+                                                    colSpan={6}
+                                                    className="px-2 py-1 text-center border-b border-gray-200"
+                                                  >
+                                                    <p className="text-gray-400 text-xs">
+                                                      No fields yet.
+                                                    </p>
+                                                  </td>
+                                                </tr>
+                                              )}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                        {/* Mobile: one stacked card per field instead of
+                                            the 6-column table above, which has no room
+                                            to breathe on a phone. Reuses the same
+                                            renderCell(...) calls so inline editing works
+                                            identically to the desktop table. */}
+                                        <div className="sm:hidden divide-y divide-gray-200 border border-gray-300 rounded-lg overflow-hidden">
+                                          {paginatedFields.map((row) => (
+                                            <div
+                                              key={row.id}
+                                              className={`p-3 space-y-2 ${
+                                                modifiedRows.has(row.id)
+                                                  ? "!bg-orange-50"
+                                                  : "bg-white"
+                                              }`}
+                                            >
+                                              <div>
+                                                <p className="text-[10px] font-semibold text-gray-500 uppercase mb-1">Field Name</p>
+                                                {renderCell(table.id, row, "fieldName")}
+                                              </div>
+                                              <div>
+                                                <p className="text-[10px] font-semibold text-gray-500 uppercase mb-1">Description</p>
+                                                {renderCell(table.id, row, "fieldDescription")}
+                                              </div>
+                                              <div className="grid grid-cols-2 gap-2">
+                                                <div>
+                                                  <p className="text-[10px] font-semibold text-gray-500 uppercase mb-1">Type</p>
+                                                  {renderCell(table.id, row, "fieldType")}
+                                                </div>
+                                                <div>
+                                                  <p className="text-[10px] font-semibold text-gray-500 uppercase mb-1">Len</p>
+                                                  {renderCell(table.id, row, "fieldLength")}
+                                                </div>
+                                              </div>
+                                              <div>
+                                                <p className="text-[10px] font-semibold text-gray-500 uppercase mb-1">Value</p>
+                                                {renderCell(table.id, row, "fieldValue")}
+                                              </div>
+                                              <div className="flex items-center justify-end gap-1 pt-1 border-t border-gray-100">
+                                                <button
+                                                  onClick={() => addFieldRow(table.id)}
+                                                  disabled={savingField}
+                                                  className="text-blue-500 hover:text-blue-700 p-1.5 rounded hover:bg-blue-50"
+                                                  title="Add row"
+                                                >
+                                                  <Plus className="h-4 w-4" />
+                                                </button>
+                                                <button
+                                                  onClick={() => saveField(table.id, row)}
+                                                  disabled={savingField}
+                                                  className={`p-1.5 rounded disabled:opacity-50 ${
+                                                    modifiedRows.has(row.id)
+                                                      ? "text-orange-500 hover:text-orange-700 hover:bg-orange-50"
+                                                      : "text-green-500 hover:text-green-700 hover:bg-green-50"
+                                                  }`}
+                                                  title={modifiedRows.has(row.id) ? "Update field" : "Save field"}
+                                                >
+                                                  <Save className="h-4 w-4" />
+                                                </button>
+                                                <button
+                                                  onClick={() => deleteField(table.id, row)}
+                                                  className="text-red-400 hover:text-red-600 p-1.5 rounded hover:bg-red-50"
+                                                  title="Delete field"
+                                                >
+                                                  <Trash2 className="h-4 w-4" />
+                                                </button>
+                                              </div>
+                                            </div>
+                                          ))}
+                                          {allFields.length === 0 && (
+                                            <div className="px-3 py-3 text-center">
+                                              <p className="text-gray-400 text-xs">No fields yet.</p>
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {/* Pagination */}
+                                        {totalPages > 1 && (
+                                          <div className="px-3 py-2 border-t border-gray-200 bg-white flex items-center justify-between">
+                                            <span className="text-xs text-gray-500">
+                                              Showing{" "}
+                                              {(currentPage - 1) *
+                                                FIELDS_PER_PAGE +
+                                                1}
+                                              –
+                                              {Math.min(
+                                                currentPage * FIELDS_PER_PAGE,
+                                                allFields.length,
+                                              )}{" "}
+                                              of {allFields.length} fields
+                                            </span>
+                                            <div className="flex items-center gap-1">
+                                              <button
+                                                onClick={() =>
+                                                  setFieldPage((p) => ({
+                                                    ...p,
+                                                    [table.id]: 1,
+                                                  }))
+                                                }
+                                                disabled={currentPage === 1}
+                                                className="px-2 py-1 text-xs rounded border border-gray-200 bg-white disabled:opacity-40 hover:bg-gray-50"
+                                              >
+                                                «
+                                              </button>
+                                              <button
+                                                onClick={() =>
+                                                  setFieldPage((p) => ({
+                                                    ...p,
+                                                    [table.id]: currentPage - 1,
+                                                  }))
+                                                }
+                                                disabled={currentPage === 1}
+                                                className="px-2 py-1 text-xs rounded border border-gray-200 bg-white disabled:opacity-40 hover:bg-gray-50"
+                                              >
+                                                ‹
+                                              </button>
+                                              {Array.from(
+                                                { length: totalPages },
+                                                (_, i) => i + 1,
+                                              )
+                                                .filter(
+                                                  (pg) =>
+                                                    pg === 1 ||
+                                                    pg === totalPages ||
+                                                    Math.abs(
+                                                      pg - currentPage,
+                                                    ) <= 1,
+                                                )
+                                                .reduce<(number | string)[]>(
+                                                  (acc, pg, idx, arr) => {
+                                                    if (
+                                                      idx > 0 &&
+                                                      (pg as number) -
+                                                        (arr[
+                                                          idx - 1
+                                                        ] as number) >
+                                                        1
+                                                    )
+                                                      acc.push("…");
+                                                    acc.push(pg);
+                                                    return acc;
+                                                  },
+                                                  [],
+                                                )
+                                                .map((pg, i) =>
+                                                  pg === "…" ? (
+                                                    <span
+                                                      key={`e${i}`}
+                                                      className="px-1 py-0.5 text-xs text-gray-400"
+                                                    >
+                                                      …
+                                                    </span>
+                                                  ) : (
+                                                    <button
+                                                      key={pg}
+                                                      onClick={() =>
+                                                        setFieldPage(
+                                                          (prev) => ({
+                                                            ...prev,
+                                                            [table.id]:
+                                                              pg as number,
+                                                          }),
+                                                        )
+                                                      }
+                                                      className={`px-2 py-1 text-xs rounded border ${currentPage === pg ? "bg-blue-600 text-white border-blue-600" : "border-gray-200 bg-white hover:bg-gray-50"}`}
+                                                    >
+                                                      {pg}
+                                                    </button>
+                                                  ),
+                                                )}
+                                              <button
+                                                onClick={() =>
+                                                  setFieldPage((p) => ({
+                                                    ...p,
+                                                    [table.id]: currentPage + 1,
+                                                  }))
+                                                }
+                                                disabled={
+                                                  currentPage === totalPages
+                                                }
+                                                className="px-2 py-1 text-xs rounded border border-gray-200 bg-white disabled:opacity-40 hover:bg-gray-50"
+                                              >
+                                                ›
+                                              </button>
+                                              <button
+                                                onClick={() =>
+                                                  setFieldPage((p) => ({
+                                                    ...p,
+                                                    [table.id]: totalPages,
+                                                  }))
+                                                }
+                                                disabled={
+                                                  currentPage === totalPages
+                                                }
+                                                className="px-2 py-1 text-xs rounded border border-gray-200 bg-white disabled:opacity-40 hover:bg-gray-50"
+                                              >
+                                                »
+                                              </button>
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        <div className="px-3 py-2 text-xs text-gray-400 text-right max-w-4xl mx-auto">
+                                          Click cell to edit · Enter to save · Esc to cancel
+                                        </div>
+                                      </div>
+                                    );
+                                  })()
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Create Modal ── */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-md mx-4">
+            <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-gray-900">
+                Create Master Data Table
+              </h3>
+              <button
+                onClick={closeCreateModal}
+                className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Table Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newTableName}
+                  onChange={(e) => setNewTableName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreate();
+                    if (e.key === "Escape") closeCreateModal();
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="e.g. Products, HospitalData, Sales"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Description <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={newTableDesc}
+                  onChange={(e) => setNewTableDesc(e.target.value)}
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  placeholder="Brief description of this master data table"
+                />
+              </div>
+              <p className="text-xs text-gray-400">
+                After creating, you can add fields manually or upload a dataset
+                from the expanded view.
+              </p>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
+              <button
+                onClick={closeCreateModal}
+                disabled={creating}
+                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={
+                  creating || !newTableName.trim() || !newTableDesc.trim()
+                }
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {creating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+                {creating ? "Creating…" : "Create Table"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Toast ── */}
+      {toast.show && (
+        <div className="fixed top-4 right-4 z-[9999]">
+          <div
+            className={`flex items-center p-3.5 rounded-lg shadow-xl border max-w-sm text-white text-sm font-medium ${toast.type === "success" ? "bg-green-500 border-green-600" : toast.type === "error" ? "bg-red-500 border-red-600" : "bg-yellow-500 border-yellow-600"}`}
+          >
+            {toast.type === "success" && (
+              <Check className="h-4 w-4 mr-2 flex-shrink-0" />
+            )}
+            {toast.type === "error" && (
+              <X className="h-4 w-4 mr-2 flex-shrink-0" />
+            )}
+            {toast.type === "warning" && (
+              <AlertTriangle className="h-4 w-4 mr-2 flex-shrink-0" />
+            )}
+            <span>{toast.message}</span>
+            <button
+              onClick={() =>
+                setToast({ show: false, message: "", type: "success" })
+              }
+              className="ml-3 text-white/80 hover:text-white"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Confirm Dialog ── */}
+      {confirmDialog.show && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full mx-4">
+            <div className="px-6 py-4 border-b border-gray-100">
+              <h3 className="text-base font-semibold text-gray-900">
+                {confirmDialog.title}
+              </h3>
+            </div>
+            <div className="px-6 py-4">
+              <p className="text-sm text-gray-600">{confirmDialog.message}</p>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
+              <button
+                onClick={confirmDialog.onCancel}
+                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDialog.onConfirm}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ExcelTableComponent;
